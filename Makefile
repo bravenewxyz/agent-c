@@ -1,57 +1,59 @@
 CC = gcc
 TARGET = agent-c
-SOURCES = main.c json.c agent.c cli.c utils.c
+SOURCE = agent.c
 
 # Detect OS once
 UNAME := $(shell uname)
 
-# Optimized build flags for smallest size
-CFLAGS_OPT = -std=c99 -D_POSIX_C_SOURCE=200809L -Oz -DNDEBUG \
+# Optimized build flags for smallest compressed size
+CFLAGS_OPT = -std=c99 -D_POSIX_C_SOURCE=200809L -Os -DNDEBUG \
              -ffunction-sections -fdata-sections \
              -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables \
-             -fno-math-errno -ffast-math -fmerge-all-constants -flto \
+             -fno-math-errno -fmerge-all-constants -flto \
              -fomit-frame-pointer -fno-ident -fno-stack-check \
              -fvisibility=hidden -fno-builtin
 
-# Linker flags per-OS (do not put -Wl flags in CFLAGS)
+# Linker flags per-OS
 ifeq ($(UNAME),Darwin)
 LDFLAGS_OPT = -Wl,-dead_strip -Wl,-x -Wl,-S
 else
-# GNU ld: garbage collect unused sections and keep binary small
 LDFLAGS_OPT = -Wl,--gc-sections
 endif
 
-# Auto-detect platform and build appropriately
+# Self-extracting archive header (LZMA on macOS, UPX on Linux)
+define SFX_HEADER
+#!/bin/sh
+tail -c +83 "$$0"|lzma -dc>/tmp/a$$$$;chmod +x /tmp/a$$$$;exec /tmp/a$$$$ "$$@"
+endef
+
 all:
-	@echo "Detecting platform..."
 	@if [ "$$(uname)" = "Darwin" ]; then \
-		echo "Building for macOS with GZEXE compression..."; \
 		$(MAKE) macos; \
 	else \
-		echo "Building for Linux with UPX compression..."; \
 		$(MAKE) linux; \
 	fi
 
-# macOS build with GZEXE compression (7.9KB)
-macos: $(SOURCES)
-	@echo "Building optimized binary for macOS..."
-	$(CC) $(CFLAGS_OPT) -o $(TARGET) $(SOURCES) $(LDFLAGS_OPT)
-	strip -S -x $(TARGET) 2>/dev/null || strip $(TARGET)
-	@echo "Applying GZEXE compression..."
-	gzexe $(TARGET)
-	@echo "✅ macOS build complete: $$(ls -lh $(TARGET) | awk '{print $$5}')"
+# macOS build with LZMA self-extracting archive (~2.5KB)
+macos: $(SOURCE)
+	@echo "Building optimized binary..."
+	$(CC) $(CFLAGS_OPT) -o $(TARGET).bin $(SOURCE) $(LDFLAGS_OPT) -framework Security -framework CoreFoundation
+	strip -S -x $(TARGET).bin
+	@printf '#!/bin/sh\ntail -c +83 "$$0"|lzma -dc>/tmp/a$$$$;chmod +x /tmp/a$$$$;exec /tmp/a$$$$ "$$@"\n' > $(TARGET)
+	lzma -9 < $(TARGET).bin >> $(TARGET)
+	chmod +x $(TARGET)
+	rm -f $(TARGET).bin
+	@echo "Built: $$(wc -c < $(TARGET) | tr -d ' ') bytes"
 
-# Linux build with UPX compression (~16KB)
-linux: $(SOURCES)
-	@echo "Building optimized binary for Linux..."
-	$(CC) $(CFLAGS_OPT) -o $(TARGET) $(SOURCES) $(LDFLAGS_OPT)
+# Linux build with UPX compression
+linux: $(SOURCE)
+	@echo "Building optimized binary..."
+	$(CC) $(CFLAGS_OPT) -o $(TARGET) $(SOURCE) $(LDFLAGS_OPT)
 	strip --strip-all $(TARGET) 2>/dev/null || strip $(TARGET)
-	@echo "Applying UPX compression..."
-	@which upx >/dev/null 2>&1 && upx --best $(TARGET) || echo "⚠️ UPX not found, binary uncompressed"
-	@echo "✅ Linux build complete: $$(ls -lh $(TARGET) | awk '{print $$5}')"
+	@which upx >/dev/null 2>&1 && upx --best $(TARGET) || echo "UPX not found"
+	@echo "Built: $$(wc -c < $(TARGET) | tr -d ' ') bytes"
 
 clean:
-	rm -f $(TARGET) $(TARGET)~ *~
+	rm -f $(TARGET) $(TARGET).bin $(TARGET)~ *~
 
 install: all
 	cp $(TARGET) /usr/local/bin/
@@ -59,16 +61,13 @@ install: all
 uninstall:
 	rm -f /usr/local/bin/$(TARGET)
 
-# Show help information
 help:
-	@echo "🚀 Agent-C - A lightweight AI agent written in C"
+	@echo "Agent-C - AI agent in C"
 	@echo ""
-	@echo "📋 SIMPLE BUILD COMMANDS:"
-	@echo "   make          Auto-detects platform and builds optimally"
-	@echo "   make macos    macOS build with GZEXE compression (4.4KB)"
-	@echo "   make linux    Linux build with UPX compression (~16KB)"
-	@echo "   make clean    Clean all build files"
-	@echo "   make install  Install to /usr/local/bin"
-	@echo "   make help     Show this help"
+	@echo "  make          Auto-detect platform and build"
+	@echo "  make macos    macOS build with LZMA SFX (~2.5KB)"
+	@echo "  make linux    Linux build with UPX"
+	@echo "  make clean    Clean build files"
+	@echo "  make install  Install to /usr/local/bin"
 
 .PHONY: all macos linux clean install uninstall help
